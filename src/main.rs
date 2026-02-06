@@ -1,12 +1,14 @@
 use async_trait::async_trait;
 use dotenv::dotenv;
 use std::env;
+use std::fs;
+use std::path::PathBuf;
 use transformer_neo::db::TuffEngine;
-use transformer_neo::pipeline::{
-    ClaimVerifier, DummyAbstractGenerator, DummyFetcher, DummySplitter, DummyVerifier, IngestPipeline,
-    LlmVerifier,
-};
 use transformer_neo::models::VerificationStatus;
+use transformer_neo::pipeline::{
+    ClaimVerifier, DummyAbstractGenerator, DummySplitter, DummyVerifier, IngestPipeline, LlmVerifier,
+    WebFetcher,
+};
 
 enum Verifier {
     Dummy(DummyVerifier),
@@ -27,15 +29,34 @@ impl ClaimVerifier for Verifier {
     }
 }
 
+fn valid_api_key(key: &str) -> bool {
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.contains("...") {
+        return false;
+    }
+    true
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenv().ok();
 
-    let engine = TuffEngine::new("tuff.wal")?;
+    let wal_dir = PathBuf::from("_tuffdb");
+    fs::create_dir_all(&wal_dir)?;
+    let wal_path = wal_dir.join("tuff.wal");
+
+    let engine = TuffEngine::new(
+        wal_path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("invalid wal path"))?,
+    )?;
 
     let verifier = match env::var("OPENAI_API_KEY") {
-        Ok(key) if !key.trim().is_empty() => {
-            let model = env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
+        Ok(key) if valid_api_key(&key) => {
+            let model = env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
             Verifier::Llm(LlmVerifier::new(&key, &model))
         }
         _ => Verifier::Dummy(DummyVerifier),
@@ -43,13 +64,13 @@ async fn main() -> anyhow::Result<()> {
 
     let pipeline = IngestPipeline {
         splitter: DummySplitter,
-        fetcher: DummyFetcher,
+        fetcher: WebFetcher::new(),
         verifier,
         generator: DummyAbstractGenerator,
         db: engine,
     };
 
-    let ops = pipeline.ingest("SMOKE scenario").await?;
+    let ops = pipeline.ingest("高市早苗は首相である").await?;
     if let Some(op) = ops.first() {
         println!("op_id={}", op.op_id);
     }

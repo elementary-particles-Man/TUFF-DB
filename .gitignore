@@ -21,3 +21,9 @@ Thumbs.db
 
 # Runtime
 tuff.wal
+
+# Env
+.env
+
+# DB
+/_tuffdb/
