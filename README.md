@@ -3,7 +3,9 @@
 ## 概要 (Overview)
 **TUFF-DB (The Unfiltered Fact Finder Database)** は、LLMのハルシネーション（幻覚）と現在バイアスを物理的・構造的に排除するために設計された、Rust製の次世代情報検証基盤です。
 
-「学習データ（過去）」と「Web上の事実（現在）」の乖離を単なるエラーとして扱わず、その間にある**「歴史的変遷（Transition）」**を特定・記録することで、真実を「点」ではなく「線（Trajectory）」として管理します。
+
+## 商用利用
+- 商用利用の方は `COMMERCIAL.md` をご確認ください。
 
 ## 主な機能 (Core Features)
 1. **Physical Identity Protocol**:
