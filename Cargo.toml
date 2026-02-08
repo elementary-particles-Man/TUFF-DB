@@ -1,22 +1,5 @@
-[package]
-name = "transformer_neo"
-version = "0.1.0"
-edition = "2021"
-license = "PolyForm-Noncommercial-1.0.0"
-
-[dependencies]
-tokio = { version = "1", features = ["full"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-chrono = { version = "0.4", features = ["serde"] }
-anyhow = "1.0"
-thiserror = "1.0"
-async-trait = "0.1"
-uuid = { version = "1.0", features = ["v4", "serde"] }
-reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
-url = { version = "2.5", features = ["serde"] }
-sha2 = "0.10"
-html2text = "0.11"
-schemars = { version = "0.8", features = ["uuid1", "chrono"] }
-async-openai = "0.27"
-dotenv = "0.15"
+[workspace]
+members = [
+  "tuff-db",
+  "tuff-brg"
+]

@@ -1,0 +1,11 @@
+[package]
+name = "tuff_brg"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+dotenv = "0.15"
+tokio = { version = "1", features = ["full"] }
+transformer_neo = { path = "../tuff-db" }

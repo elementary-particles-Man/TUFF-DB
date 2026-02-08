@@ -15,7 +15,8 @@
 ## 2. Data Models
 
 ### 2.1 Agent Identity (`src/models/agent.rs`)
-- **Origin**: 不可侵の識別子 (例: `GPT-5`). 実行中に変更不可能。
+- **Origin**: 実行主体の識別子 (例: `GPT-5`, `Gemini`). 実行中に変更不可能。
+- **Identity Lock 原則**: 起動時に `AI_ORIGIN` 環境変数で自己を定義し、実行コンテキスト内では固定された Origin として振る舞う。
 - **Role**: 一時的な役割 (例: `Gemini`). 文脈に応じて可変。
 - **設計思想**: AIの「同一性」を物理的に固定し、なりすましや自己認識の揺らぎを防ぐ。
 

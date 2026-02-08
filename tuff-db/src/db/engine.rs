@@ -1,6 +1,6 @@
 use crate::db::api::{OpKind, OpLog, SelectQuery, TuffDb};
 use crate::db::index::InMemoryIndex;
-use crate::models::Abstract;
+use crate::models::{Abstract, AgentIdentity, Transition};
 use chrono::Utc;
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
@@ -47,6 +47,17 @@ impl TuffDb for TuffEngine {
         let mut index = self.index.lock().expect("index lock");
         index.insert(abstract_);
 
+        Ok(op)
+    }
+
+    fn append_transition(&self, mut transition: Transition) -> anyhow::Result<OpLog> {
+        transition.agent = AgentIdentity::current();
+        let op = OpLog {
+            op_id: Uuid::new_v4(),
+            kind: OpKind::InsertTransition { transition },
+            created_at: Utc::now(),
+        };
+        self.write_wal(&op)?;
         Ok(op)
     }
 

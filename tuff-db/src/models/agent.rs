@@ -1,5 +1,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 
 /// Agent Identity: Origin is constant, Role is variable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -16,13 +17,13 @@ pub struct AgentIdentity {
 }
 
 impl AgentIdentity {
-    // コンパイル時に Origin を決定する
-    // (TUFF-DBのビルドごとに、どのAIとして振る舞うかを固定)
-    const ORIGIN_CONST: &'static str = "GPT-5"; // ★ここを書き換えない限り不変
-
     pub fn current() -> Self {
+        static ORIGIN: OnceLock<String> = OnceLock::new();
+        let origin = ORIGIN
+            .get_or_init(|| std::env::var("AI_ORIGIN").unwrap_or_else(|_| "Gemini".to_string()))
+            .clone();
         Self {
-            origin: Self::ORIGIN_CONST.to_string(),
+            origin,
             role: std::env::var("AGENT_ROLE").ok(),
             build: env!("CARGO_PKG_VERSION").to_string(),
         }
