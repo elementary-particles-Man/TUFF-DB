@@ -1,8 +1,15 @@
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Seek, SeekFrom, Write};
+use std::io;
 use std::path::{Path, PathBuf};
+use tokio::fs::{self, OpenOptions};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
+
+#[derive(Debug, Clone, Copy)]
+pub enum RecoveryMode {
+    Strict,
+    TruncateCorruptedTail,
+}
 
 #[derive(Debug)]
 pub struct WalStorage {
@@ -11,33 +18,38 @@ pub struct WalStorage {
 }
 
 impl WalStorage {
-    pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
+    pub async fn open(path: impl AsRef<Path>, mode: RecoveryMode) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         if !path.exists() {
             if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
+                fs::create_dir_all(parent).await?;
             }
-            File::create(&path)?;
+            fs::File::create(&path).await?;
         }
+
         let mut storage = Self {
             path,
             index: HashMap::new(),
         };
-        storage.rebuild_index()?;
+        storage.rebuild_index(mode).await?;
         Ok(storage)
     }
 
-    pub fn append(&mut self, tag: &str, payload: &str) -> io::Result<u64> {
+    pub async fn append(&mut self, tag: &str, payload: &str) -> io::Result<u64> {
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&self.path)?;
-        let offset = file.metadata()?.len();
+            .open(&self.path)
+            .await?;
+
+        let offset = file.metadata().await?.len();
         let escaped = escape_payload(payload);
         let checksum = sha256_hex(&format!("{tag}\t{escaped}"));
         let line = format!("{tag}\t{escaped}\t{checksum}\n");
-        file.write_all(line.as_bytes())?;
-        file.flush()?;
+
+        file.write_all(line.as_bytes()).await?;
+        file.flush().await?;
+
         self.index.entry(tag.to_string()).or_default().push(offset);
         Ok(offset)
     }
@@ -46,42 +58,92 @@ impl WalStorage {
         self.index.get(tag).cloned().unwrap_or_default()
     }
 
-    pub fn read_at_offset(&self, offset: u64) -> io::Result<Option<WalRecord>> {
-        let mut file = File::open(&self.path)?;
-        file.seek(SeekFrom::Start(offset))?;
-        let mut reader = BufReader::new(file);
-        let mut line = String::new();
-        let bytes = reader.read_line(&mut line)?;
-        if bytes == 0 {
+    pub async fn read_at_offset(&self, offset: u64) -> io::Result<Option<WalRecord>> {
+        let mut file = fs::File::open(&self.path).await?;
+        file.seek(SeekFrom::Start(offset)).await?;
+
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).await?;
+        if buf.is_empty() {
             return Ok(None);
         }
+
+        let line_end = buf.iter().position(|b| *b == b'\n').unwrap_or(buf.len());
+        let line = String::from_utf8_lossy(&buf[..line_end]).to_string();
         Ok(parse_line(&line))
     }
 
-    fn rebuild_index(&mut self) -> io::Result<()> {
+    async fn rebuild_index(&mut self, mode: RecoveryMode) -> io::Result<()> {
         self.index.clear();
-        let file = File::open(&self.path)?;
-        let mut reader = BufReader::new(file);
-        let mut offset: u64 = 0;
-        let mut line = String::new();
-        loop {
-            line.clear();
-            let bytes = reader.read_line(&mut line)?;
-            if bytes == 0 {
-                break;
-            }
-            if let Some(record) = parse_line(&line) {
-                let expected = sha256_hex(&format!("{}\t{}", record.tag, escape_payload(&record.payload)));
-                if expected == record.checksum {
-                    self.index
-                        .entry(record.tag.clone())
-                        .or_default()
-                        .push(offset);
+
+        let data = fs::read(&self.path).await?;
+        let mut offset: usize = 0;
+        let mut last_good_offset: usize = 0;
+
+        while offset < data.len() {
+            let rel = data[offset..].iter().position(|b| *b == b'\n');
+            let Some(nl_rel) = rel else {
+                return self.handle_corruption(mode, last_good_offset, offset, "incomplete tail line").await;
+            };
+
+            let end = offset + nl_rel;
+            let line_bytes = &data[offset..end];
+            let line = match std::str::from_utf8(line_bytes) {
+                Ok(s) => s,
+                Err(_) => {
+                    return self
+                        .handle_corruption(mode, last_good_offset, offset, "non-utf8 line")
+                        .await;
                 }
+            };
+
+            let Some(record) = parse_line(line) else {
+                return self
+                    .handle_corruption(mode, last_good_offset, offset, "invalid wal format")
+                    .await;
+            };
+
+            let expected = sha256_hex(&format!("{}\t{}", record.tag, escape_payload(&record.payload)));
+            if expected != record.checksum {
+                return self
+                    .handle_corruption(mode, last_good_offset, offset, "checksum mismatch")
+                    .await;
             }
-            offset += bytes as u64;
+
+            self.index
+                .entry(record.tag.clone())
+                .or_default()
+                .push(offset as u64);
+
+            offset = end + 1;
+            last_good_offset = offset;
         }
+
         Ok(())
+    }
+
+    async fn handle_corruption(
+        &self,
+        mode: RecoveryMode,
+        safe_len: usize,
+        corrupted_at: usize,
+        reason: &str,
+    ) -> io::Result<()> {
+        match mode {
+            RecoveryMode::Strict => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("wal corrupted at {corrupted_at}: {reason}"),
+            )),
+            RecoveryMode::TruncateCorruptedTail => {
+                eprintln!(
+                    "WAL recovery: truncating corrupted tail at offset {} ({})",
+                    corrupted_at, reason
+                );
+                let file = OpenOptions::new().write(true).open(&self.path).await?;
+                file.set_len(safe_len as u64).await?;
+                Ok(())
+            }
+        }
     }
 }
 
@@ -106,7 +168,10 @@ fn parse_line(line: &str) -> Option<WalRecord> {
 }
 
 fn escape_payload(input: &str) -> String {
-    input.replace('\\', "\\\\").replace('\t', "\\t").replace('\n', "\\n")
+    input
+        .replace('\\', "\\\\")
+        .replace('\t', "\\t")
+        .replace('\n', "\\n")
 }
 
 fn unescape_payload(input: &str) -> String {

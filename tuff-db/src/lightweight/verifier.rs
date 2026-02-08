@@ -1,7 +1,5 @@
 use std::collections::HashMap;
 use std::fs;
-use std::net::Shutdown;
-use std::net::TcpStream;
 use std::path::Path;
 
 pub const TAG_KEY_MAX_LEN: usize = 64;
@@ -195,18 +193,9 @@ impl Verifier {
         Self { meaning_db }
     }
 
-    pub fn verify_or_disconnect(
-        &self,
-        tag: &str,
-        payload: &str,
-        stream: &TcpStream,
-    ) -> bool {
+    pub fn verify_tag_payload(&self, tag: &str, payload: &str) -> bool {
         let lw = LightweightVerifier::new(self.meaning_db.clone());
-        if self.meaning_db.meaning_for(tag).is_some() && lw.verify_tag_payload(tag, payload).is_none() {
-            let _ = stream.shutdown(Shutdown::Both);
-            return false;
-        }
-        true
+        self.meaning_db.meaning_for(tag).is_none() || lw.verify_tag_payload(tag, payload).is_some()
     }
 }
 

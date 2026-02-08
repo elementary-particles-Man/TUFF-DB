@@ -39,6 +39,7 @@ const STOP_OVERLAY_ID = "tuff-brg-stop-overlay";
 const CONTINUE_BUTTON_ID = "tuff-brg-continue-btn";
 const META_COPY_ID = "tuff-brg-meta-copy";
 const RETRY_BUTTON_ID = "tuff-brg-retry-btn";
+const SELECTOR_WARNING_ID = "tuff-brg-selector-warning";
 
 let lastScrollTop = null;
 let activeAssistant = null;
@@ -68,6 +69,7 @@ let lastJudgeTs = null;
 let lastDebugFragment = "";
 let lastDebugTs = 0;
 let activeSelectors = buildSelectorConfig();
+let selectorMissSince = 0;
 
 window.__GPT_BOOSTER_NEW__ = true;
 
@@ -308,6 +310,33 @@ function deactivateStopOverlay() {
   stopActive = false;
   const overlay = document.getElementById(STOP_OVERLAY_ID);
   if (overlay) overlay.remove();
+}
+
+function ensureSelectorWarning(message) {
+  if (document.getElementById(SELECTOR_WARNING_ID)) return;
+  const box = document.createElement("div");
+  box.id = SELECTOR_WARNING_ID;
+  box.textContent = message;
+  box.style.cssText = [
+    "position:fixed",
+    "right:12px",
+    "bottom:12px",
+    "z-index:2147483646",
+    "padding:10px 12px",
+    "border:1px solid #8b5e34",
+    "background:#fff6e5",
+    "color:#6b3f1d",
+    "font-size:12px",
+    "border-radius:8px",
+    "max-width:320px",
+    "line-height:1.4"
+  ].join(";");
+  document.body.appendChild(box);
+}
+
+function clearSelectorWarning() {
+  const box = document.getElementById(SELECTOR_WARNING_ID);
+  if (box) box.remove();
 }
 
 function buildStreamFragmentPayload(fragment) {
@@ -752,7 +781,15 @@ function handleMutations() {
   }
   const latest = getLatestAssistant();
   annotateTurns();
-  if (!latest) return;
+  if (!latest) {
+    if (!selectorMissSince) selectorMissSince = Date.now();
+    if (Date.now() - selectorMissSince > 3000) {
+      ensureSelectorWarning("TUFF-BRG: セレクタが一致せず監視対象を検出できません。OVERRIDE_SELECTORS を確認してください。");
+    }
+    return;
+  }
+  selectorMissSince = 0;
+  clearSelectorWarning();
 
   const latestText = extractNodeText(latest);
   if (latestText) debugLogFragment("pick", latestText);

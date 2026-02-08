@@ -1,13 +1,14 @@
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 
 mod storage;
 mod verifier;
 
-use storage::WalStorage;
+use storage::{RecoveryMode, WalStorage};
 use verifier::{normalize_tag_key, MeaningDb, Verifier};
 
 fn log_line(msg: &str) {
@@ -18,8 +19,12 @@ fn log_line(msg: &str) {
 async fn main() -> anyhow::Result<()> {
     let wal_path = std::env::var("TUFF_WAL_PATH").unwrap_or_else(|_| "tuff-db-lightweight.wal".to_string());
     let addr = std::env::var("TUFF_LIGHTWEIGHT_ADDR").unwrap_or_else(|_| "127.0.0.1:8788".to_string());
+    let recovery_mode = match std::env::var("TUFF_WAL_RECOVERY_MODE") {
+        Ok(v) if v.eq_ignore_ascii_case("strict") => RecoveryMode::Strict,
+        _ => RecoveryMode::TruncateCorruptedTail,
+    };
 
-    let storage = Arc::new(Mutex::new(WalStorage::open(&wal_path)?));
+    let storage = Arc::new(Mutex::new(WalStorage::open(&wal_path, recovery_mode).await?));
 
     // MeaningDB: env var "TUFF_MEANING_DB" -> "tag=meaning;tag2=meaning2"
     let mut meaning_map = HashMap::new();
@@ -42,40 +47,34 @@ async fn main() -> anyhow::Result<()> {
         let (stream, _) = listener.accept().await?;
         let storage = Arc::clone(&storage);
         let verifier = verifier.clone();
-        tokio::task::spawn_blocking(move || {
-            let std_stream = match stream.into_std() {
-                Ok(s) => s,
-                Err(_) => return,
-            };
-            let read_stream = match std_stream.try_clone() {
-                Ok(s) => s,
-                Err(_) => return,
-            };
-            let reader = BufReader::new(read_stream);
-            for line in reader.lines() {
-                let line = match line {
-                    Ok(l) => l,
-                    Err(_) => break,
-                };
+
+        tokio::spawn(async move {
+            let (reader_half, mut writer_half) = stream.into_split();
+            let mut lines = BufReader::new(reader_half).lines();
+
+            while let Ok(Some(line)) = lines.next_line().await {
                 let line = line.trim().to_string();
                 if line.is_empty() {
                     continue;
                 }
+
                 let (tag, payload) = split_tag_payload(&line);
                 let Some(tag) = normalize_tag_key(&tag) else {
                     log_line("INGEST: invalid tag -> disconnect");
-                    let _ = std_stream.shutdown(std::net::Shutdown::Both);
+                    let _ = writer_half.shutdown().await;
                     break;
                 };
+
                 log_line("INGEST: start");
-                let ok = verifier.verify_or_disconnect(&tag, &payload, &std_stream);
+                let ok = verifier.verify_tag_payload(&tag, &payload);
                 if !ok {
                     log_line("INGEST: mismatch -> disconnect");
+                    let _ = writer_half.shutdown().await;
                     break;
                 }
-                if let Ok(mut db) = storage.lock() {
-                    let _ = db.append(&tag, &payload);
-                }
+
+                let mut db = storage.lock().await;
+                let _ = db.append(&tag, &payload).await;
                 log_line("INGEST: end");
             }
         });
