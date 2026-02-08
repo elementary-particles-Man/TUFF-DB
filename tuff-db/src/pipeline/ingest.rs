@@ -1,12 +1,15 @@
 use crate::db::{OpLog, TuffDb};
 use crate::models::Abstract;
-use crate::pipeline::traits::{AbstractGenerator, ClaimVerifier, FactFetcher, InputSplitter};
+use crate::pipeline::traits::{
+    AbstractGenerator, ClaimVerifier, FactFetcher, InputSplitter, VerificationResult,
+};
 
 pub struct IngestOutcome {
     pub op: OpLog,
     pub status: crate::models::VerificationStatus,
     pub confidence: f32,
     pub evidence_count: usize,
+    pub reason: String,
 }
 
 pub struct IngestPipeline<S, F, V, G, D>
@@ -38,7 +41,11 @@ where
         for fragment in parts {
             let facts = self.fetcher.fetch(&fragment).await?;
             let evidence_count = facts.iter().map(|f| f.evidence.len()).sum();
-            let (status, confidence) = self.verifier.verify(&fragment, &facts).await?;
+            let VerificationResult {
+                status,
+                confidence,
+                reason,
+            } = self.verifier.verify(&fragment, &facts).await?;
             let abstract_ = self
                 .generator
                 .generate(&fragment, &facts, status)
@@ -49,6 +56,7 @@ where
                 status,
                 confidence,
                 evidence_count,
+                reason,
             });
         }
         Ok(ops)

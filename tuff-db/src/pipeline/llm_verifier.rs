@@ -1,5 +1,5 @@
 use crate::models::{RequiredFact, VerificationStatus};
-use crate::pipeline::traits::ClaimVerifier;
+use crate::pipeline::traits::{ClaimVerifier, VerificationResult};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use async_openai::types::{
@@ -49,6 +49,16 @@ impl LlmVerifier {
         let factor = Self::clamp(evidence_count as f32 / 3.0, 0.4, 1.0);
         Self::clamp(conf_llm * factor, 0.0, 1.0)
     }
+
+    fn summarize_reasoning(raw: &str) -> String {
+        let trimmed = raw.replace('\n', " ").trim().to_string();
+        if trimmed.len() <= 120 {
+            return trimmed;
+        }
+        let mut out: String = trimmed.chars().take(120).collect();
+        out.push_str("...");
+        out
+    }
 }
 
 #[derive(Deserialize)]
@@ -64,9 +74,13 @@ impl ClaimVerifier for LlmVerifier {
         &self,
         fragment: &str,
         facts: &[RequiredFact],
-    ) -> Result<(VerificationStatus, f32)> {
+    ) -> Result<VerificationResult> {
         if facts.is_empty() {
-            return Ok((VerificationStatus::GrayMid, 0.4));
+            return Ok(VerificationResult {
+                status: VerificationStatus::GrayMid,
+                confidence: 0.4,
+                reason: "no evidence".to_string(),
+            });
         }
 
         let mut evidence_blocks = Vec::new();
@@ -121,9 +135,13 @@ SMOKE if evidence contradicts claim. WHITE if evidence supports claim. Use GRAY_
             reasoning: format!("Parse error: {}", content),
         });
 
-        let _reasoning = parsed.reasoning;
         let status = Self::parse_status(&parsed.status);
         let confidence = Self::confidence_adjust(parsed.confidence, evidence_count);
-        Ok((status, confidence))
+        let reason = Self::summarize_reasoning(&parsed.reasoning);
+        Ok(VerificationResult {
+            status,
+            confidence,
+            reason,
+        })
     }
 }

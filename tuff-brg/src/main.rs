@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use tokio::net::TcpListener;
 use tokio_tungstenite::accept_async;
 use transformer_neo::db::{OpKind, TuffEngine};
-use transformer_neo::models::{AgentIdentity, Claim, Evidence, VerificationStatus};
+use transformer_neo::models::{AgentIdentity, Claim, Evidence, Id, IsoDateTime, ManualOverride, VerificationStatus};
 use transformer_neo::pipeline::{
     AbstractGenerator, ClaimVerifier, DummyAbstractGenerator, DummySplitter, DummyVerifier,
     FactFetcher, GapResolver, IngestPipeline, LlmAbstractor, LlmGapResolver, LlmVerifier,
@@ -33,7 +33,7 @@ impl ClaimVerifier for Verifier {
         &self,
         fragment: &str,
         facts: &[transformer_neo::models::RequiredFact],
-    ) -> anyhow::Result<(VerificationStatus, f32)> {
+    ) -> anyhow::Result<transformer_neo::pipeline::traits::VerificationResult> {
         match self {
             Verifier::Dummy(v) => v.verify(fragment, facts).await,
             Verifier::Llm(v) => v.verify(fragment, facts).await,
@@ -116,6 +116,10 @@ async fn main() -> anyhow::Result<()> {
         generator: abstractor,
         db: engine,
     };
+    let stop_threshold = env::var("TUFF_STOP_CONFIDENCE")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(0.35);
 
     let addr: SocketAddr = "127.0.0.1:8787".parse()?;
     let listener = TcpListener::bind(addr).await?;
@@ -153,6 +157,34 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
 
+            if let Message::ControlCommand { id: _, ts: _, payload } = parsed {
+                if payload.command == ControlCommand::Continue
+                    && payload.trigger == ControlTrigger::ManualOverride
+                {
+                    let meta = payload.manual_override;
+                    let note = meta
+                        .as_ref()
+                        .and_then(|m| m.note.clone())
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or_else(|| "No reason provided".to_string());
+                    let conversation_id = meta.as_ref().and_then(|m| m.conversation_id.clone());
+                    let abstract_id = meta
+                        .as_ref()
+                        .and_then(|m| m.abstract_id.as_ref())
+                        .and_then(|s| s.parse::<Id>().ok());
+                    let override_ = ManualOverride {
+                        override_id: Id::new(),
+                        observed_at: IsoDateTime::now(),
+                        agent: AgentIdentity::current(),
+                        conversation_id,
+                        abstract_id,
+                        note: Some(note),
+                    };
+                    let _ = pipeline.db.append_override(override_)?;
+                }
+                continue;
+            }
+
             if let Message::StreamFragment { id, ts: _, payload } = parsed {
                 let StreamFragmentPayload {
                     fragment,
@@ -165,11 +197,13 @@ async fn main() -> anyhow::Result<()> {
                 let mut status = VerificationStatus::GrayMid;
                 let mut confidence = 0.4_f32;
                 let mut evidence_count = 0usize;
+                let mut reason = "ok".to_string();
                 let mut abstract_id: Option<String> = None;
                 if let Some(outcome) = ops.first() {
                     status = outcome.status;
                     confidence = outcome.confidence;
                     evidence_count = outcome.evidence_count;
+                    reason = outcome.reason.clone();
                     if let OpKind::InsertAbstract { abstract_ } = &outcome.op.kind {
                         abstract_id = Some(abstract_.id.to_string());
                     }
@@ -179,7 +213,7 @@ async fn main() -> anyhow::Result<()> {
                     ts: Utc::now().to_rfc3339(),
                     payload: JudgeResultPayload {
                         status: to_proto_status(status),
-                        reason: "ok".to_string(),
+                        reason,
                         confidence,
                         claim: fragment.clone(),
                         evidence_count: evidence_count as u32,
@@ -206,7 +240,7 @@ async fn main() -> anyhow::Result<()> {
                         serde_json::to_string(&stop)?,
                     ))
                     .await?;
-                } else if confidence < 0.35 {
+                } else if confidence < stop_threshold {
                     let stop = Message::ControlCommand {
                         id: "system".to_string(),
                         ts: Utc::now().to_rfc3339(),

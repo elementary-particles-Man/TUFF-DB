@@ -1,5 +1,7 @@
 use crate::models::{Abstract, RequiredFact, TagBits, TagGroupId, TopicId, VerificationStatus};
-use crate::pipeline::traits::{AbstractGenerator, ClaimVerifier, FactFetcher, InputSplitter};
+use crate::pipeline::traits::{
+    AbstractGenerator, ClaimVerifier, FactFetcher, InputSplitter, VerificationResult,
+};
 use async_trait::async_trait;
 
 pub struct DummySplitter;
@@ -35,11 +37,19 @@ impl ClaimVerifier for DummyVerifier {
         &self,
         _fragment: &str,
         facts: &[RequiredFact],
-    ) -> anyhow::Result<(VerificationStatus, f32)> {
+    ) -> anyhow::Result<VerificationResult> {
         if facts.is_empty() {
-            Ok((VerificationStatus::GrayMid, 0.4))
+            Ok(VerificationResult {
+                status: VerificationStatus::GrayMid,
+                confidence: 0.4,
+                reason: "no evidence".to_string(),
+            })
         } else {
-            Ok((VerificationStatus::White, 0.8))
+            Ok(VerificationResult {
+                status: VerificationStatus::White,
+                confidence: 0.8,
+                reason: "dummy verifier".to_string(),
+            })
         }
     }
 }

@@ -15,6 +15,9 @@ const WS_RETRY_BASE_MS = 800;
 const WS_RETRY_MAX_MS = 8000;
 const WS_SEND_DEBOUNCE_MS = 180;
 const STOP_OVERLAY_ID = "tuff-brg-stop-overlay";
+const CONTINUE_BUTTON_ID = "tuff-brg-continue-btn";
+const META_COPY_ID = "tuff-brg-meta-copy";
+const RETRY_BUTTON_ID = "tuff-brg-retry-btn";
 
 let lastScrollTop = null;
 let activeAssistant = null;
@@ -34,6 +37,12 @@ let lastSentText = "";
 let sendTimer = null;
 let lastAbstractId = null;
 let stopActive = false;
+let aiOrigin = "Gemini";
+let tuffWebBase = "";
+let lastJudgeStatus = null;
+let lastJudgeReason = null;
+let lastJudgeClaim = null;
+let lastJudgeTs = null;
 
 window.__GPT_BOOSTER_NEW__ = true;
 
@@ -86,6 +95,10 @@ function wsConnect() {
       if (msg.payload.abstract_id) {
         lastAbstractId = msg.payload.abstract_id;
       }
+      lastJudgeStatus = msg.payload.status || null;
+      lastJudgeReason = msg.payload.reason || null;
+      lastJudgeClaim = msg.payload.claim || null;
+      lastJudgeTs = msg.ts || nowRfc3339();
     }
 
     if (msg.type === "ControlCommand" && msg.payload) {
@@ -96,6 +109,23 @@ function wsConnect() {
         deactivateStopOverlay();
       }
     }
+  });
+}
+
+function loadAddonSettings() {
+  if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    chrome.storage.local.get(["TUFF_WEB_BASE", "AI_ORIGIN"], (res) => {
+      if (res && typeof res.TUFF_WEB_BASE === "string") {
+        tuffWebBase = res.TUFF_WEB_BASE.trim();
+      }
+      if (res && typeof res.AI_ORIGIN === "string" && res.AI_ORIGIN.trim()) {
+        aiOrigin = res.AI_ORIGIN.trim();
+      }
+      resolve();
+    });
   });
 }
 
@@ -128,8 +158,25 @@ function ensureStopOverlayStyle() {
 #${STOP_OVERLAY_ID} .title { font-size: 18px; margin-bottom: 10px; }
 #${STOP_OVERLAY_ID} .reason { font-size: 13px; opacity: 0.85; }
 #${STOP_OVERLAY_ID} .link { margin-top: 12px; font-size: 12px; color: #7dd3fc; }
+#${META_COPY_ID} { margin-top: 10px; font-size: 12px; color: #e5e7eb; user-select: text; cursor: copy; }
+#${RETRY_BUTTON_ID} { margin-left: 8px; }
 `;
   document.head.appendChild(style);
+}
+
+function buildMetaLine() {
+  const ts = lastJudgeTs || nowRfc3339();
+  const status = lastJudgeStatus || "UNKNOWN";
+  const reason = lastJudgeReason ? ` (${lastJudgeReason})` : "";
+  const claim = lastJudgeClaim || "(unknown claim)";
+  return `[${ts}] [AI: ${aiOrigin}] Claim: ${claim} | Result: ${status}${reason}`;
+}
+
+function buildAbstractLink() {
+  if (!lastAbstractId) return null;
+  if (!tuffWebBase) return null;
+  const base = tuffWebBase.replace(/\/+$/, "");
+  return `${base}/abstract/${lastAbstractId}`;
 }
 
 function activateStopOverlay(detail) {
@@ -138,15 +185,42 @@ function activateStopOverlay(detail) {
   if (document.getElementById(STOP_OVERLAY_ID)) return;
   const overlay = document.createElement("div");
   overlay.id = STOP_OVERLAY_ID;
-  const link = lastAbstractId ? `Abstract ID: ${lastAbstractId}` : "Abstract ID: (pending)";
+  const abstractLink = buildAbstractLink();
+  const link = abstractLink
+    ? `Abstract: <a href="${abstractLink}" target="_blank" rel="noreferrer">${lastAbstractId}</a>`
+    : lastAbstractId
+      ? `Abstract ID: ${lastAbstractId}`
+      : "Abstract ID: (pending)";
   overlay.innerHTML = `
     <div class="card">
       <div class="title">STOP: 検証失敗を検知</div>
       <div class="reason">${detail || "Smoke detected"}</div>
       <div class="link">${link}</div>
+      <div id="${META_COPY_ID}">${buildMetaLine()}</div>
+      <div style="margin-top:12px;">
+        <button id="${CONTINUE_BUTTON_ID}" style="padding:6px 12px;border-radius:8px;border:1px solid #444;background:#222;color:#eee;cursor:pointer;">
+          自己責任で続行
+        </button>
+      </div>
     </div>
   `;
   document.body.appendChild(overlay);
+  const btn = document.getElementById(CONTINUE_BUTTON_ID);
+  if (btn) {
+    btn.addEventListener("click", () => {
+      sendManualOverride();
+    });
+  }
+  const meta = document.getElementById(META_COPY_ID);
+  if (meta) {
+    meta.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(meta.textContent || "");
+      } catch (_) {
+        // Fallback: user can still select text manually.
+      }
+    });
+  }
 }
 
 function deactivateStopOverlay() {
@@ -188,6 +262,26 @@ function scheduleSend(fragment) {
     sendTimer = null;
     sendStreamFragment(fragment);
   }, WS_SEND_DEBOUNCE_MS);
+}
+
+function sendManualOverride() {
+  if (!wsReady || !ws || ws.readyState !== WebSocket.OPEN) return;
+  const msg = {
+    type: "ControlCommand",
+    id: crypto.randomUUID(),
+    ts: nowRfc3339(),
+    payload: {
+      command: "CONTINUE",
+      trigger: "ManualOverride",
+      detail: "User override",
+      manual_override: {
+        conversation_id: convoId,
+        abstract_id: lastAbstractId,
+        note: "No reason provided"
+      }
+    }
+  };
+  ws.send(JSON.stringify(msg));
 }
 
 function detectModelTokenFromLocation() {
@@ -561,7 +655,9 @@ function start() {
   if (!document.body) return;
   refreshResponseSafeMode();
   ensureTimestampStyle();
-  wsConnect();
+  loadAddonSettings().finally(() => {
+    wsConnect();
+  });
   const observer = new MutationObserver(scheduleMutationHandling);
   observer.observe(document.body, OBS_CONFIG);
   annotateTurns();

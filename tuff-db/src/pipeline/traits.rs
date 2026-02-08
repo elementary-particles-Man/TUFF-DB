@@ -1,6 +1,13 @@
 use crate::models::{Abstract, Claim, Evidence, RequiredFact, Transition, VerificationStatus};
 use async_trait::async_trait;
 
+#[derive(Clone, Debug)]
+pub struct VerificationResult {
+    pub status: VerificationStatus,
+    pub confidence: f32,
+    pub reason: String,
+}
+
 pub trait InputSplitter: Send + Sync {
     fn split(&self, input: &str) -> Vec<String>;
 }
@@ -16,7 +23,7 @@ pub trait ClaimVerifier: Send + Sync {
         &self,
         fragment: &str,
         facts: &[RequiredFact],
-    ) -> anyhow::Result<(VerificationStatus, f32)>;
+    ) -> anyhow::Result<VerificationResult>;
 }
 
 #[async_trait]

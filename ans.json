@@ -2,32 +2,25 @@
   "type": "RESPONSE",
   "status": "DONE",
   "summary": [
-    "ClaimVerifier の返却を (VerificationStatus, confidence) に拡張し、LlmVerifier/DummyVerifier/ingest を対応させました。",
-    "tuff-brg の STOP 判定に confidence を結合し、JudgeResult に confidence と evidence_count を反映しました。",
-    "ManualOverride 用の WAL 記録に備え、ManualOverride モデルと OpKind::AppendOverride を追加しました。",
-    "ControlCommand に manual_override メタ情報の拡張フィールドを追加しました。"
+    "オーバーレイ内にコピー可能なメタデータ行（RFC3339 時刻 / AI_ORIGIN / Claim / Result）を追加しました。",
+    "AI_ORIGIN は chrome.storage.local の値を参照し、未設定時は Gemini を使用します。",
+    "TUFF_WEB_BASE の設定用 options.html / options.js を追加し、manifest.json に options_page を定義しました。",
+    "abstract_id がある場合は TUFF_WEB_BASE を使ったリンクを生成します。"
   ],
   "files_changed": [
-    "tuff-db/src/pipeline/traits.rs",
-    "tuff-db/src/pipeline/ingest.rs",
-    "tuff-db/src/pipeline/mock.rs",
-    "tuff-db/src/pipeline/llm_verifier.rs",
-    "tuff-db/src/main.rs",
-    "tuff-db/src/models/history.rs",
-    "tuff-db/src/db/api.rs",
-    "tuff-db/src/db/engine.rs",
-    "tuff-brg/src/main.rs",
-    "tuff-brg/src/api/message.rs"
+    "tuff-brg/addon/booster.js",
+    "tuff-brg/addon/options.html",
+    "tuff-brg/addon/options.js",
+    "tuff-brg/addon/manifest.json"
   ],
   "review": {
     "improvements": [
-      "confidence の算出根拠（evidence_count の重み付け、Tier-1 ソース加点）を設定可能にする。",
-      "JudgeResult の reason を LLM の reasoning から要約して返す実装を追加する。",
-      "ManualOverride の CONTINUE 送信経路（Addon -> MID）の設計と実装を追加する。"
+      "AI_ORIGIN の設定 UI を options_page に追加するか検討する。",
+      "meta 行の内容（USER/AI 併記）を protocol に明記する。"
     ],
     "open_questions": [
-      "confidence 閾値 0.35 を環境変数化するか固定とするか。",
-      "ManualOverride を WAL に記録するタイミングと payload（conversation_id / abstract_id / note）の確定。"
+      "clipboard 書き込みが拒否された場合の UI 表示（トースト等）を追加するか。",
+      "TUFF_WEB_BASE が未設定のとき abstract_id をどの導線で扱うか。"
     ]
   },
   "tests": "NOT_RUN"
