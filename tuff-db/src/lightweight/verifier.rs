@@ -1,6 +1,8 @@
 use std::collections::HashMap;
+use std::fs;
 use std::net::Shutdown;
 use std::net::TcpStream;
+use std::path::Path;
 
 pub const TAG_KEY_MAX_LEN: usize = 64;
 
@@ -56,24 +58,130 @@ fn meaning_matches(mode: MeaningMatchMode, required: &str, payload: &str) -> boo
 }
 
 #[derive(Debug, Clone)]
+pub struct TagIndex {
+    map: HashMap<String, String>,
+}
+
+impl TagIndex {
+    pub fn from_map(raw: HashMap<String, String>) -> Self {
+        let mut map = HashMap::new();
+        for (tag, meaning) in raw {
+            if let Some(key) = normalize_tag_key(&tag) {
+                map.insert(key, meaning);
+            }
+        }
+        Self { map }
+    }
+
+    pub fn get(&self, tag: &str) -> Option<&str> {
+        let key = normalize_tag_key(tag)?;
+        self.map.get(&key).map(|s| s.as_str())
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.map.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct MeaningDb {
-    meanings: HashMap<String, String>,
+    tag_index: TagIndex,
 }
 
 impl MeaningDb {
     pub fn new(raw_meanings: HashMap<String, String>) -> Self {
-        let mut meanings = HashMap::new();
-        for (raw_tag, meaning) in raw_meanings {
-            if let Some(tag) = normalize_tag_key(&raw_tag) {
-                meanings.insert(tag, meaning);
+        Self {
+            tag_index: TagIndex::from_map(raw_meanings),
+        }
+    }
+
+    pub fn from_path(path: impl AsRef<Path>) -> std::io::Result<Self> {
+        let content = fs::read_to_string(path)?;
+        let mut map = HashMap::new();
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let mut parts = line.splitn(2, '=');
+            let tag = match parts.next() {
+                Some(v) => v.trim(),
+                None => continue,
+            };
+            let meaning = match parts.next() {
+                Some(v) => v.trim(),
+                None => continue,
+            };
+            if !tag.is_empty() && !meaning.is_empty() {
+                map.insert(tag.to_string(), meaning.to_string());
             }
         }
-        Self { meanings }
+        Ok(Self::new(map))
+    }
+
+    pub fn merge(&mut self, raw_meanings: HashMap<String, String>) {
+        let mut merged = HashMap::new();
+        for (k, v) in self.tag_index.iter() {
+            merged.insert(k.to_string(), v.to_string());
+        }
+        for (k, v) in raw_meanings {
+            merged.insert(k, v);
+        }
+        self.tag_index = TagIndex::from_map(merged);
     }
 
     pub fn meaning_for(&self, tag: &str) -> Option<&str> {
-        let key = normalize_tag_key(tag)?;
-        self.meanings.get(&key).map(|s| s.as_str())
+        self.tag_index.get(tag)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LightweightHit {
+    pub tag: String,
+    pub required: String,
+    pub mode: MeaningMatchMode,
+}
+
+#[derive(Debug, Clone)]
+pub struct LightweightVerifier {
+    meaning_db: MeaningDb,
+}
+
+impl LightweightVerifier {
+    pub fn new(meaning_db: MeaningDb) -> Self {
+        Self { meaning_db }
+    }
+
+    pub fn from_sources(path: Option<&Path>, env_pairs: HashMap<String, String>) -> Option<Self> {
+        let mut db = path
+            .and_then(|p| MeaningDb::from_path(p).ok())
+            .unwrap_or_else(|| MeaningDb::new(HashMap::new()));
+        db.merge(env_pairs);
+        if db.tag_index.iter().next().is_none() {
+            None
+        } else {
+            Some(Self::new(db))
+        }
+    }
+
+    pub fn verify_fragment(&self, fragment: &str) -> Option<LightweightHit> {
+        let (tag, payload) = split_tag_payload(fragment);
+        self.verify_tag_payload(&tag, &payload)
+    }
+
+    pub fn verify_tag_payload(&self, tag: &str, payload: &str) -> Option<LightweightHit> {
+        let normalized_tag = normalize_tag_key(tag)?;
+        let required = self.meaning_db.meaning_for(&normalized_tag)?;
+        let mode = match_mode_for_tag(&normalized_tag);
+        if meaning_matches(mode, required, payload) {
+            Some(LightweightHit {
+                tag: normalized_tag,
+                required: required.to_string(),
+                mode,
+            })
+        } else {
+            None
+        }
     }
 }
 
@@ -93,18 +201,21 @@ impl Verifier {
         payload: &str,
         stream: &TcpStream,
     ) -> bool {
-        let Some(normalized_tag) = normalize_tag_key(tag) else {
+        let lw = LightweightVerifier::new(self.meaning_db.clone());
+        if self.meaning_db.meaning_for(tag).is_some() && lw.verify_tag_payload(tag, payload).is_none() {
             let _ = stream.shutdown(Shutdown::Both);
             return false;
-        };
-
-        if let Some(required) = self.meaning_db.meaning_for(tag) {
-            let mode = match_mode_for_tag(&normalized_tag);
-            if !meaning_matches(mode, required, payload) {
-                let _ = stream.shutdown(Shutdown::Both);
-                return false;
-            }
         }
         true
     }
+}
+
+fn split_tag_payload(line: &str) -> (String, String) {
+    if let Some((tag, payload)) = line.split_once('\t') {
+        return (tag.trim().to_string(), payload.trim().to_string());
+    }
+    if let Some((tag, payload)) = line.split_once(' ') {
+        return (tag.trim().to_string(), payload.trim().to_string());
+    }
+    (line.trim().to_string(), String::new())
 }

@@ -23,6 +23,7 @@ use tokio::signal;
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use tokio::time::{timeout, Duration};
 use transformer_neo::db::{OpKind, TuffDb, TuffEngine};
+use transformer_neo::lightweight::{LightweightVerifier, MeaningDb, MeaningMatchMode};
 use transformer_neo::models::{AgentIdentity, Id, IsoDateTime, ManualOverride, VerificationStatus};
 use transformer_neo::pipeline::{
     AbstractGenerator, ClaimVerifier, DummyAbstractGenerator, DummySplitter, DummyVerifier,
@@ -101,6 +102,7 @@ struct AppState {
             TuffEngine,
         >,
     >,
+    lightweight_verifier: Option<Arc<LightweightVerifier>>,
     gap_resolver: Option<Arc<LlmGapResolver>>,
     stop_threshold: f32,
     history_dir: PathBuf,
@@ -149,6 +151,8 @@ async fn main() -> anyhow::Result<()> {
         db: engine,
     };
 
+    let lightweight_verifier = init_lightweight_verifier(&wal_dir);
+
     let stop_threshold = env::var("TUFF_STOP_CONFIDENCE")
         .ok()
         .and_then(|v| v.parse::<f32>().ok())
@@ -159,6 +163,7 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState {
         pipeline: Arc::new(pipeline),
+        lightweight_verifier,
         gap_resolver,
         stop_threshold,
         history_dir,
@@ -179,6 +184,45 @@ async fn main() -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     Ok(())
+}
+
+fn parse_meaning_env_pairs() -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    if let Ok(raw) = env::var("TUFF_MEANING_DB") {
+        for item in raw.split(';') {
+            let mut parts = item.splitn(2, '=');
+            if let (Some(tag), Some(meaning)) = (parts.next(), parts.next()) {
+                if !tag.trim().is_empty() && !meaning.trim().is_empty() {
+                    map.insert(tag.trim().to_string(), meaning.trim().to_string());
+                }
+            }
+        }
+    }
+    map
+}
+
+fn init_lightweight_verifier(wal_dir: &PathBuf) -> Option<Arc<LightweightVerifier>> {
+    let enabled = env::var("TUFF_FAST_PATH")
+        .map(|v| v.trim() != "0")
+        .unwrap_or(true);
+    if !enabled {
+        return None;
+    }
+
+    let default_path = wal_dir.join("lightweight").join("meaning.db");
+    let path = env::var("TUFF_LIGHTWEIGHT_MEANING_PATH")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or(default_path);
+
+    let mut merged = if path.exists() {
+        MeaningDb::from_path(&path).unwrap_or_else(|_| MeaningDb::new(std::collections::HashMap::new()))
+    } else {
+        MeaningDb::new(std::collections::HashMap::new())
+    };
+    merged.merge(parse_meaning_env_pairs());
+    let verifier = LightweightVerifier::new(merged);
+    Some(Arc::new(verifier))
 }
 
 async fn shutdown_signal() {
@@ -243,6 +287,33 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 continue;
             }
             log_line("INGEST: start");
+
+            if let Some(lightweight) = state_for_worker.lightweight_verifier.as_ref() {
+                if let Some(hit) = lightweight.verify_fragment(&fragment) {
+                    let mode = match hit.mode {
+                        MeaningMatchMode::Exact => "exact",
+                        MeaningMatchMode::Contains => "contains",
+                    };
+                    let judge = Message::JudgeResult {
+                        id: Id::new().to_string(),
+                        ts: Utc::now().to_rfc3339(),
+                        payload: JudgeResultPayload {
+                            status: ProtoStatus::White,
+                            reason: format!("source=Cache tag={} mode={}", hit.tag, mode),
+                            confidence: 1.0,
+                            claim: fragment.clone(),
+                            evidence_count: 0,
+                            abstract_id: None,
+                        },
+                    };
+                    let _ = tx_for_worker
+                        .send(WsMessage::Text(serde_json::to_string(&judge).unwrap_or_default()))
+                        .await;
+                    log_line("INGEST: cache hit");
+                    continue;
+                }
+            }
+
             let ingest_result = timeout(
                 Duration::from_secs(3),
                 state_for_worker.pipeline.ingest(&fragment),
@@ -271,10 +342,12 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 status = outcome.status;
                 confidence = outcome.confidence;
                 evidence_count = outcome.evidence_count;
-                reason = outcome.reason.clone();
+                reason = format!("source=LLM {}", outcome.reason);
                 if let OpKind::InsertAbstract { abstract_ } = &outcome.op.kind {
                     abstract_id = Some(abstract_.id.to_string());
                 }
+            } else {
+                reason = "source=LLM ok".to_string();
             }
 
             let judge = Message::JudgeResult {
