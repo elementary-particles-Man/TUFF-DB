@@ -112,3 +112,28 @@ DOM断片の送信。
 ## 補足
 - `confidence` の算出根拠（ログイット差分 / 証拠数等）は `docs/architecture.md` で定義する。
 - `Auth` は接続直後に送信する方式を基本とし、将来的にメッセージ内トークンへ拡張可能とする。
+
+## TagDB Key 正規化仕様
+- 目的: Core / Lightweight で同一キーを生成し、照合結果の不一致を防ぐ。
+- 入力: 任意文字列タグ。
+- 正規化手順:
+  1. 小文字化（ASCII基準）。
+  2. 英数字（`a-z0-9`）以外は区切りとして `-` に置換。
+  3. 連続する `-` は1つに圧縮。
+  4. 先頭・末尾の `-` を除去。
+  5. 最大長64文字に切り詰め、再度先頭・末尾の `-` を除去。
+- 出力: `lower-kebab-case` の Tag Key。空文字になった場合は無効タグとして扱う。
+
+## MeaningDB Matching 仕様
+- 基本方針:
+  - スニペット本文は `Contains`（部分一致）で判定。
+  - 識別子系タグ（`id`, `*-id`, `*-id-*`）は `Exact`（完全一致）で判定。
+- `Contains`:
+  - `payload.contains(required)` が真であれば一致。
+- `Exact`:
+  - `payload.trim() == required.trim()` で一致。
+- 無効タグ（正規化後に空）はプロトコル違反として切断対象。
+
+## 実装準拠点
+- Lightweight Verifier: `tuff-db/src/lightweight/verifier.rs`
+- Lightweight Ingest入口（Tag正規化適用）: `tuff-db/src/lightweight/main.rs`

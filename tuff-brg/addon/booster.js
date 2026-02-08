@@ -3,28 +3,30 @@
 const DEBUG = true;
 const OBS_CONFIG = { childList: true, subtree: true };
 const TIMESTAMP_STYLE_ID = "gpt-booster-visible-timestamp-style";
-const SELECTORS = {
-  assistant: '[data-message-author-role="assistant"], .model-response, [data-test-id="model-response"], message-content',
-  rootFallback: '[role="article"]',
-  turns: '[data-message-author-role], .user-query, .model-response, [data-test-id="user-query"], [data-test-id="model-response"], user-query, message-content'
-};
-const GEMINI_SELECTORS = {
-  assistant: [
-    'div[data-message-author-role="model"]',
-    'div[data-message-author-role="assistant"]',
-    'div.message-content',
-    'div[class*="message-content"]',
-    'div[class*="model-response"]',
-    'div[class*="response"]',
-    'div[aria-label*="Model response"]',
-    'div[aria-live="polite"]'
-  ].join(", "),
-  turns: [
-    'div[data-message-author-role]',
-    'div.message-content',
-    'div[class*="message-content"]',
-    'div[class*="response"]'
-  ].join(", ")
+const BASE_SELECTORS = {
+  default: {
+    assistant: '[data-message-author-role="assistant"], .model-response, [data-test-id="model-response"], message-content',
+    rootFallback: '[role="article"]',
+    turns: '[data-message-author-role], .user-query, .model-response, [data-test-id="user-query"], [data-test-id="model-response"], user-query, message-content'
+  },
+  gemini: {
+    assistant: [
+      'div[data-message-author-role="model"]',
+      'div[data-message-author-role="assistant"]',
+      'div.message-content',
+      'div[class*="message-content"]',
+      'div[class*="model-response"]',
+      'div[class*="response"]',
+      'div[aria-label*="Model response"]',
+      'div[aria-live="polite"]'
+    ].join(", "),
+    turns: [
+      'div[data-message-author-role]',
+      'div.message-content',
+      'div[class*="message-content"]',
+      'div[class*="response"]'
+    ].join(", ")
+  }
 };
 const STABLE_TEXT_MS = 900;
 const SAFE_MODEL_RE = /\bgpt-?5\b/i;
@@ -65,6 +67,7 @@ let lastJudgeClaim = null;
 let lastJudgeTs = null;
 let lastDebugFragment = "";
 let lastDebugTs = 0;
+let activeSelectors = buildSelectorConfig();
 
 window.__GPT_BOOSTER_NEW__ = true;
 
@@ -74,6 +77,34 @@ function nowRfc3339() {
 
 function isGeminiPage() {
   return location.hostname.includes("gemini.google.com");
+}
+
+function validSelectorString(value, fallback) {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function buildSelectorConfig(overrideRaw) {
+  const o = overrideRaw && typeof overrideRaw === "object" ? overrideRaw : {};
+  const od = o.default && typeof o.default === "object" ? o.default : {};
+  const og = o.gemini && typeof o.gemini === "object" ? o.gemini : {};
+  return {
+    default: {
+      assistant: validSelectorString(od.assistant, BASE_SELECTORS.default.assistant),
+      rootFallback: validSelectorString(od.rootFallback, BASE_SELECTORS.default.rootFallback),
+      turns: validSelectorString(od.turns, BASE_SELECTORS.default.turns)
+    },
+    gemini: {
+      assistant: validSelectorString(og.assistant, BASE_SELECTORS.gemini.assistant),
+      turns: validSelectorString(og.turns, BASE_SELECTORS.gemini.turns)
+    }
+  };
+}
+
+function selectorFor(kind) {
+  if (isGeminiPage() && activeSelectors.gemini[kind]) {
+    return activeSelectors.gemini[kind];
+  }
+  return activeSelectors.default[kind];
 }
 
 function debugLogFragment(source, text) {
@@ -154,12 +185,25 @@ function loadAddonSettings() {
     return Promise.resolve();
   }
   return new Promise((resolve) => {
-    chrome.storage.local.get(["TUFF_WEB_BASE", "AI_ORIGIN"], (res) => {
+    chrome.storage.local.get(["TUFF_WEB_BASE", "AI_ORIGIN", "OVERRIDE_SELECTORS"], (res) => {
       if (res && typeof res.TUFF_WEB_BASE === "string") {
         tuffWebBase = res.TUFF_WEB_BASE.trim();
       }
       if (res && typeof res.AI_ORIGIN === "string" && res.AI_ORIGIN.trim()) {
         aiOrigin = res.AI_ORIGIN.trim();
+      }
+      if (res && res.OVERRIDE_SELECTORS) {
+        try {
+          const raw =
+            typeof res.OVERRIDE_SELECTORS === "string"
+              ? JSON.parse(res.OVERRIDE_SELECTORS)
+              : res.OVERRIDE_SELECTORS;
+          activeSelectors = buildSelectorConfig(raw);
+        } catch (_) {
+          activeSelectors = buildSelectorConfig();
+        }
+      } else {
+        activeSelectors = buildSelectorConfig();
       }
       resolve();
     });
@@ -275,7 +319,7 @@ function buildStreamFragmentPayload(fragment) {
       conversation_id: convoId,
       sequence_number: seq++,
       url: window.location.href,
-      selector: SELECTORS.assistant,
+      selector: selectorFor("assistant"),
       fragment,
       context: {
         page_title: document.title || "",
@@ -425,17 +469,17 @@ function pickLatestWithText(nodes) {
 }
 
 function getLatestGeminiAssistant() {
-  const nodes = document.querySelectorAll(GEMINI_SELECTORS.assistant);
+  const nodes = document.querySelectorAll(selectorFor("assistant"));
   return pickLatestWithText(nodes);
 }
 
 function getLatestAssistant() {
   if (isGeminiPage()) {
-    return getLatestGeminiAssistant() || document.querySelector(SELECTORS.rootFallback);
+    return getLatestGeminiAssistant() || document.querySelector(selectorFor("rootFallback"));
   }
-  const assistants = document.querySelectorAll(SELECTORS.assistant);
+  const assistants = document.querySelectorAll(selectorFor("assistant"));
   if (assistants.length) return assistants[assistants.length - 1];
-  const fallbackNodes = document.querySelectorAll(SELECTORS.rootFallback);
+  const fallbackNodes = document.querySelectorAll(selectorFor("rootFallback"));
   return fallbackNodes[fallbackNodes.length - 1] || null;
 }
 
@@ -627,7 +671,8 @@ function upsertVisibleTimestamp(node, role, options = {}) {
 function detectRole(node) {
   const roleAttr = node.getAttribute("data-message-author-role");
   if (roleAttr) return roleAttr.toLowerCase();
-  
+
+  if (node.matches(selectorFor("assistant"))) return "assistant";
   const tagName = node.tagName.toLowerCase();
   const testId = node.getAttribute("data-test-id") || "";
 
@@ -640,7 +685,7 @@ function detectRole(node) {
 
 function annotateTurns() {
   if (responseSafeMode) return;
-  const turns = document.querySelectorAll(isGeminiPage() ? GEMINI_SELECTORS.turns : SELECTORS.turns);
+  const turns = document.querySelectorAll(selectorFor("turns"));
   turns.forEach((node) => {
     if (!(node instanceof HTMLElement)) return;
     const role = detectRole(node);

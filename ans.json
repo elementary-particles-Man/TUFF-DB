@@ -112,5 +112,50 @@
         "TuffDb trait async化に合わせて将来の実装（別DB backend）で同一契約を維持するか"
       ]
     }
+  },
+  "next_instruction_execution": {
+    "status": "APPLIED_AND_VERIFIED",
+    "source": "CODE_REVIEW_AND_NEXT_STEPS (2026-02-09T08:50:00+09:00)",
+    "tasks": {
+      "TASK-004": {
+        "result": "done",
+        "changes": [
+          "booster.js に BASE_SELECTORS + activeSelectors + selectorFor(kind) を追加",
+          "chrome.storage.local から OVERRIDE_SELECTORS を読み込み、デフォルトへ安全マージ",
+          "detectRole/getLatestAssistant/annotateTurns/buildStreamFragmentPayload を動的セレクタ参照へ変更"
+        ]
+      },
+      "TASK-005": {
+        "result": "done",
+        "changes": [
+          "docs/protocol.md に Tag Key正規化規則（lower-kebab/max64/無効タグ）を追記",
+          "docs/protocol.md に Meaning一致ルール（Contains/Exact）を追記",
+          "lightweight verifier に normalize_tag_key, match mode, strict verification を実装",
+          "lightweight main 入口で正規化済みtagのみ受け付けるよう変更"
+        ]
+      },
+      "TASK-006": {
+        "result": "done",
+        "changes": [
+          "scripts/regression_check.sh を新規追加",
+          "tuff_brg起動->WebSocket送信->WAL追記確認->SIGINT終了コード確認 を自動化"
+        ]
+      }
+    },
+    "files_modified": [
+      "tuff-brg/addon/booster.js",
+      "docs/protocol.md",
+      "tuff-db/src/lightweight/verifier.rs",
+      "tuff-db/src/lightweight/main.rs",
+      "scripts/regression_check.sh"
+    ],
+    "validation": {
+      "cargo_check": "passed",
+      "regression_script": "passed"
+    },
+    "notes": {
+      "compat": "OVERRIDE_SELECTORS 未設定時は既存セレクタをそのまま使用",
+      "warning": "Contains/Exact判定は現時点でタグ名規則（id判定）に基づく"
+    }
   }
 }

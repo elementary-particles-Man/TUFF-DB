@@ -8,7 +8,7 @@ mod storage;
 mod verifier;
 
 use storage::WalStorage;
-use verifier::{MeaningDb, Verifier};
+use verifier::{normalize_tag_key, MeaningDb, Verifier};
 
 fn log_line(msg: &str) {
     println!("{}", msg);
@@ -62,6 +62,11 @@ async fn main() -> anyhow::Result<()> {
                     continue;
                 }
                 let (tag, payload) = split_tag_payload(&line);
+                let Some(tag) = normalize_tag_key(&tag) else {
+                    log_line("INGEST: invalid tag -> disconnect");
+                    let _ = std_stream.shutdown(std::net::Shutdown::Both);
+                    break;
+                };
                 log_line("INGEST: start");
                 let ok = verifier.verify_or_disconnect(&tag, &payload, &std_stream);
                 if !ok {
