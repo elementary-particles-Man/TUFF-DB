@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TUFF History Viewer</title>
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --panel: #111822;
+      --text: #e8eef5;
+      --muted: #9fb0c3;
+      --ingest: #7a8a9a;
+      --transition: #f5a524;
+      --override: #f31260;
+      --verified: #22c55e;
+      --smoke: #ef4444;
+      --gray: #94a3b8;
+    }
+    body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background: var(--bg); color: var(--text); }
+    header { padding: 20px; border-bottom: 1px solid #1e293b; }
+    h1 { margin: 0; font-size: 20px; }
+    main { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 20px; }
+    .panel { background: var(--panel); border: 1px solid #1f2a3a; border-radius: 10px; padding: 16px; }
+    .card { border: 1px solid #223044; border-radius: 10px; padding: 12px; margin-bottom: 10px; }
+    .status { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; }
+    .status.verified { background: #0f2a1a; color: var(--verified); }
+    .status.smoke { background: #2b0b0b; color: var(--smoke); }
+    .status.overridden { background: #2b0b1f; color: var(--override); }
+    .status.gray { background: #1b2230; color: var(--gray); }
+    .muted { color: var(--muted); font-size: 12px; }
+    .timeline-item { border-left: 3px solid #334155; padding-left: 10px; margin-bottom: 10px; }
+    .timeline-item.ingest { border-color: var(--ingest); }
+    .timeline-item.transition { border-color: var(--transition); }
+    .timeline-item.override { border-color: var(--override); }
+    button { background: #1f2937; color: #e5e7eb; border: 1px solid #374151; border-radius: 6px; padding: 4px 8px; cursor: pointer; }
+    button:hover { background: #374151; }
+    a { color: #7dd3fc; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .copy-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>TUFF History Viewer</h1>
+    <div class="muted">latest_facts.json / timeline.json</div>
+  </header>
+  <main>
+    <section class="panel">
+      <h2>Latest Facts</h2>
+      <div id="facts"></div>
+    </section>
+    <section class="panel">
+      <h2>Timeline</h2>
+      <div id="timeline"></div>
+    </section>
+  </main>
+
+  <script>
+    async function fetchJson(url) {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    }
+
+    function statusClass(status) {
+      if (status === "VERIFIED") return "verified";
+      if (status === "SMOKE") return "smoke";
+      if (status === "OVERRIDDEN") return "overridden";
+      return "gray";
+    }
+
+    function eventClass(type) {
+      if (type === "INGEST") return "ingest";
+      if (type === "TRANSITION") return "transition";
+      if (type === "OVERRIDE") return "override";
+      return "";
+    }
+
+    function copyText(text) {
+      navigator.clipboard.writeText(text).catch(() => {});
+    }
+
+    async function render() {
+      const facts = await fetchJson("/history/api/latest");
+      const timelines = await fetchJson("/history/api/timeline");
+
+      const factsEl = document.getElementById("facts");
+      factsEl.innerHTML = "";
+      facts.facts.forEach((f) => {
+        const card = document.createElement("div");
+        card.className = "card";
+        const statusTag = `<span class="status ${statusClass(f.status)}">${f.status}</span>`;
+        const evidenceLink = f.last_evidence_id ? `<a href="${f.last_evidence_id}" target="_blank">Evidence</a>` : "";
+        card.innerHTML = `
+          <div>${statusTag}</div>
+          <div><strong>${f.subject}</strong></div>
+          <div>${f.current_value}</div>
+          <div class="muted">conf: ${f.confidence} (${f.confidence_kind}) / origin: ${f.agent_origin}</div>
+          <div class="muted">last_event: ${f.last_event_ts} / op: ${f.source_op_id}</div>
+          <div>${evidenceLink}</div>
+        `;
+        factsEl.appendChild(card);
+      });
+
+      const timelineEl = document.getElementById("timeline");
+      timelineEl.innerHTML = "";
+      timelines.forEach((t) => {
+        const h = document.createElement("h3");
+        h.textContent = t.topic_id;
+        timelineEl.appendChild(h);
+        t.events.forEach((e) => {
+          const item = document.createElement("div");
+          item.className = `timeline-item ${eventClass(e.type)}`;
+          const text = `[${e.timestamp}] [${e.agent_origin}] [${e.status_after}] op=${e.op_id}`;
+          item.innerHTML = `
+            <div><strong>${e.type}</strong></div>
+            <div class="muted">${text}</div>
+            <div class="muted">${e.reason || ""}</div>
+            <div class="copy-row">
+              <button data-copy="${text}">コピー</button>
+              <span class="muted">${e.evidence_ids ? e.evidence_ids.join(", ") : ""}</span>
+            </div>
+          `;
+          item.querySelector("button").addEventListener("click", (ev) => {
+            copyText(ev.currentTarget.getAttribute("data-copy"));
+          });
+          timelineEl.appendChild(item);
+        });
+      });
+    }
+
+    render().catch((err) => {
+      document.getElementById("facts").textContent = `ERROR: ${err.message}`;
+    });
+  </script>
+</body>
+</html>

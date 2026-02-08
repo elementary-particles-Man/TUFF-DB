@@ -2,25 +2,24 @@
   "type": "RESPONSE",
   "status": "DONE",
   "summary": [
-    "オーバーレイ内にコピー可能なメタデータ行（RFC3339 時刻 / AI_ORIGIN / Claim / Result）を追加しました。",
-    "AI_ORIGIN は chrome.storage.local の値を参照し、未設定時は Gemini を使用します。",
-    "TUFF_WEB_BASE の設定用 options.html / options.js を追加し、manifest.json に options_page を定義しました。",
-    "abstract_id がある場合は TUFF_WEB_BASE を使ったリンクを生成します。"
+    "tuff-brg に axum を導入し、/history と /history/api/latest|timeline を提供する HTTP エンドポイントを追加しました。",
+    "WebSocket は同一ポートの / で維持し、既存の検証/STOP/Override 連携はそのまま動作します。",
+    "History Viewer の single-file HTML を tuff-brg/assets/history_viewer.html として追加しました。"
   ],
   "files_changed": [
-    "tuff-brg/addon/booster.js",
-    "tuff-brg/addon/options.html",
-    "tuff-brg/addon/options.js",
-    "tuff-brg/addon/manifest.json"
+    "tuff-brg/src/main.rs",
+    "tuff-brg/Cargo.toml",
+    "tuff-brg/assets/history_viewer.html"
   ],
   "review": {
     "improvements": [
-      "AI_ORIGIN の設定 UI を options_page に追加するか検討する。",
-      "meta 行の内容（USER/AI 併記）を protocol に明記する。"
+      "latest_facts.json / timeline.json が存在しない場合のエラーメッセージを JSON 形式で返す。",
+      "/history の HTML を埋め込みバイナリ化するか、パス解決を安定化する。",
+      "WS のパス分離（例: /ws）を将来検討する。"
     ],
     "open_questions": [
-      "clipboard 書き込みが拒否された場合の UI 表示（トースト等）を追加するか。",
-      "TUFF_WEB_BASE が未設定のとき abstract_id をどの導線で扱うか。"
+      "history_out の生成タイミングを自動化するか（cron/起動時の再生成）。",
+      "Viewer のリンク用 base URL を TUFF_WEB_BASE で統一するか。"
     ]
   },
   "tests": "NOT_RUN"
