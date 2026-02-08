@@ -47,7 +47,11 @@ async fn main() -> anyhow::Result<()> {
                 Ok(s) => s,
                 Err(_) => return,
             };
-            let reader = BufReader::new(std_stream.try_clone().ok()?);
+            let read_stream = match std_stream.try_clone() {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            let reader = BufReader::new(read_stream);
             for line in reader.lines() {
                 let line = match line {
                     Ok(l) => l,
@@ -69,7 +73,6 @@ async fn main() -> anyhow::Result<()> {
                 }
                 log_line("INGEST: end");
             }
-            Some(())
         });
     }
 }

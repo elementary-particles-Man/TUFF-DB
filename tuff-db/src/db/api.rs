@@ -1,4 +1,5 @@
 use crate::models::{Abstract, ManualOverride, Transition, VerificationStatus};
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -23,9 +24,10 @@ pub struct SelectQuery {
     pub min_verification: Option<VerificationStatus>,
 }
 
+#[async_trait]
 pub trait TuffDb: Send + Sync {
-    fn append_abstract(&self, abstract_: Abstract) -> anyhow::Result<OpLog>;
-    fn append_transition(&self, transition: Transition) -> anyhow::Result<OpLog>;
-    fn append_override(&self, override_: ManualOverride) -> anyhow::Result<OpLog>;
-    fn select(&self, query: SelectQuery) -> anyhow::Result<Vec<Abstract>>;
+    async fn append_abstract(&self, abstract_: Abstract) -> anyhow::Result<OpLog>;
+    async fn append_transition(&self, transition: Transition) -> anyhow::Result<OpLog>;
+    async fn append_override(&self, override_: ManualOverride) -> anyhow::Result<OpLog>;
+    async fn select(&self, query: SelectQuery) -> anyhow::Result<Vec<Abstract>>;
 }

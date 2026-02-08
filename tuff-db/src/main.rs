@@ -74,7 +74,7 @@ async fn main() -> anyhow::Result<()> {
         wal_path
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("invalid wal path"))?,
-    )?;
+    ).await?;
 
     let api_key = env::var("OPENAI_API_KEY").ok();
     let model = env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
@@ -111,7 +111,7 @@ async fn main() -> anyhow::Result<()> {
         println!("op_id={}", outcome.op.op_id);
     }
 
-    let all = pipeline.select_all()?;
+    let all = pipeline.select_all().await?;
     println!("stored={}", all.len());
 
     // Gap resolver integration (mock internal state)

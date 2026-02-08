@@ -10,7 +10,7 @@ use axum::extract::ws::{Message as WsMessage, WebSocket};
 use chrono::Utc;
 use dotenv::dotenv;
 use futures_util::StreamExt;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use futures_util::SinkExt;
 use std::env;
 use std::fs;
@@ -121,7 +121,7 @@ async fn main() -> anyhow::Result<()> {
         wal_path
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("invalid wal path"))?,
-    )?;
+    ).await?;
 
     let api_key = env::var("OPENAI_API_KEY").ok();
     let model = env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
@@ -222,7 +222,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     log_line("WS: client connected");
     let (mut ws_tx, mut ws_rx) = socket.split();
     let (tx, mut rx) = mpsc::channel::<WsMessage>(256);
-    let (frag_tx, mut frag_rx) = mpsc::channel::<String>(128);
+    let (frag_tx, mut frag_rx) = watch::channel(String::new());
 
     // outbound pump
     let tx_task = tokio::spawn(async move {
@@ -237,7 +237,11 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     let state_for_worker = state.clone();
     let tx_for_worker = tx.clone();
     let ingest_task = tokio::spawn(async move {
-        while let Some(fragment) = frag_rx.recv().await {
+        while frag_rx.changed().await.is_ok() {
+            let fragment = frag_rx.borrow().clone();
+            if fragment.is_empty() {
+                continue;
+            }
             log_line("INGEST: start");
             let ingest_result = timeout(
                 Duration::from_secs(3),
@@ -345,7 +349,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     abstract_id,
                     note: Some(note),
                 };
-                let _ = state.pipeline.db.append_override(override_);
+                let _ = state.pipeline.db.append_override(override_).await;
             }
             continue;
         }
@@ -353,10 +357,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         if let Message::StreamFragment { payload, .. } = parsed {
             log_line("WS: StreamFragment received");
             let StreamFragmentPayload { fragment, .. } = payload;
-            if frag_tx.try_send(fragment).is_err() {
-                // queue full -> drop newest (keep backpressure simple)
-                log_line("INGEST: queue full, dropped newest");
-            }
+            let _ = frag_tx.send(fragment);
         }
     }
 

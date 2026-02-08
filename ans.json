@@ -1,26 +1,116 @@
 {
-  "type": "RESPONSE",
-  "status": "DONE",
-  "summary": [
-    "TUFF-DB-LIGHTWEIGHT を最小実装で追加しました（平文WAL + オンメモリTag/Meaning + 物理切断）。",
-    "RDBMS不要・オンメモリ前提の即答/照合を最優先とする設計に合わせています。"
+  "meta": {
+    "type": "INTEGRATED_REVIEW_REPORT",
+    "reviewer": "Gemini (Code Analysis)",
+    "target_commit": "b99bf05",
+    "timestamp_iso": "2026-02-09T08:35:00+09:00",
+    "integration_source": "ans.json (CODEX Status Report)"
+  },
+  "status_verification": {
+    "verdict": "VERIFIED_CONSISTENT",
+    "summary": "CODEX側報告(ans.json)の実装状況は、リポジトリ内のコードベースと整合しています。",
+    "verified_features": [
+      {
+        "component": "tuff-brg",
+        "status": "Implemented",
+        "confirmation": "WebSocket/Ingestのタスク分離、mpsc(3s timeout)、SIGINT/SIGTERM処理の実装を確認。"
+      },
+      {
+        "component": "addon/booster.js",
+        "status": "Implemented",
+        "confirmation": "Gemini向けセレクタ、送信間引き(600ms/差分5文字)、STOPオーバーレイの実装を確認。"
+      },
+      {
+        "component": "tuff-db (Lightweight)",
+        "status": "Files Present",
+        "confirmation": "src/lightweight/ 配下に独立した実装(WAL, Verifier)が存在することを確認。"
+      }
+    ]
+  },
+  "critical_risk_assessment": {
+    "alert": "機能要件は満たしていますが、以下の設計判断は高負荷時または実運用においてデータ欠損を引き起こす可能性があります。",
+    "findings": [
+      {
+        "id": "CRITICAL-01",
+        "category": "Data Integrity",
+        "location": "tuff-brg/src/main.rs:324 (ingest_task)",
+        "issue": "最新フラグメントの欠損 (Queue Full Strategy)",
+        "description": "Ingestキューが満杯の際、`try_send` エラーで「送信しようとした最新の入力」を破棄しています。ユーザーが入力を完了した瞬間の「最も重要な確定テキスト」が、直前の推論遅延により捨てられるリスクが高いです。",
+        "recommendation": "現在の「新規破棄」から「最古破棄（リングバッファ）」または「`tokio::sync::watch`（最新値のみ保持）」への変更を強く推奨します。"
+      },
+      {
+        "id": "CRITICAL-02",
+        "category": "Performance",
+        "location": "tuff-db/src/db/engine.rs",
+        "issue": "非同期ランタイム内のブロッキングI/O",
+        "description": "`std::fs::File`, `BufWriter` の使用はTokioのワーカースレッドをブロックし、WebSocketのハートビートや並行処理に悪影響を与えます。",
+        "recommendation": "`tokio::fs` への置き換え、または `tokio::task::spawn_blocking` でのラップが必要です。"
+      }
+    ]
+  },
+  "integrated_action_plan": {
+    "priority_fixes": [
+      "tuff-brg: Ingestキューのドロップ戦略変更（最新維持・古きを捨てる）",
+      "tuff-db: Engine内ファイルI/Oの非同期化",
+      "addon: DOMセレクタ定義の外部Config化（保守性向上）"
+    ],
+    "spec_refinement": [
+      "TagDBキー形式（正規化規則・区切り文字）の仕様策定とLightweight/Core間の共通化 [Source: ans.json]",
+      "MeaningDB一致条件の明確化（誤切断防止） [Source: ans.json]",
+      "即答条件（閾値・Override優先順位）の文書化 [Source: ans.json]"
+    ],
+    "process_improvements": [
+      "History更新の自動化フロー（Ingest同期または定期バッチ）の確立",
+      "Ctrl+C停止後のプロセス残留チェック手順の運用化"
+    ]
+  },
+  "merged_open_questions": [
+    "tuff-brg と lightweight DB の統合アーキテクチャ（完全統合するか、即答用サイドカーとして分離維持するか）",
+    "lightweightプロトコルの仕様固定化（`tag<tab>payload` 形式の採用可否）",
+    "Mismatch検知時の挙動（即切断だけでなく、Warning表示モードの新設可否）",
+    "Gap Resolverの内部状態（Internal State）の正確な再構築方法（WAL参照の実装方針）"
   ],
-  "files": [
-    "tuff-db/src/lightweight/storage.rs",
-    "tuff-db/src/lightweight/verifier.rs",
-    "tuff-db/src/lightweight/main.rs",
-    "tuff-db/Cargo.toml"
-  ],
-  "behavior": [
-    "WAL: append-only plaintext（\t区切り + SHA256サフィックス）",
-    "Memory index: HashMap<String, Vec<u64>>（tag→offsets）",
-    "Mismatch時: std::net::Shutdown::Both で物理切断",
-    "INGESTログ: start/end を必ず出力"
-  ],
-  "run": [
-    "TUFF_MEANING_DB=tag1=meaning1;tag2=meaning2 \",
-    "TUFF_WAL_PATH=tuff-db-lightweight.wal \",
-    "TUFF_LIGHTWEIGHT_ADDR=127.0.0.1:8788 \",
-    "cargo run -p transformer_neo --bin tuff_db_lightweight"
-  ]
+  "codex_note": {
+    "status": "IMPORTED",
+    "next_execution_order": [
+      "CRITICAL-01 修正（キュー戦略）",
+      "CRITICAL-02 修正（I/O非同期化）",
+      "回帰確認（WS応答・WAL書き込み・Ctrl+C停止）"
+    ]
+  },
+  "codex_execution_result": {
+    "status": "APPLIED_AND_VERIFIED",
+    "applied_changes": [
+      "CRITICAL-01: tuff-brg ingest入力を mpsc(128) から watch(String) へ変更し、キュー満杯時の最新欠損を回避",
+      "CRITICAL-02: TuffDb trait を async 化し、TuffEngine WAL書き込みを tokio::fs/tokio::io へ移行",
+      "呼び出し側を await 対応（tuff-brg main, tuff-db main, pipeline ingest）"
+    ],
+    "files_modified": [
+      "tuff-brg/src/main.rs",
+      "tuff-db/src/db/api.rs",
+      "tuff-db/src/db/engine.rs",
+      "tuff-db/src/pipeline/ingest.rs",
+      "tuff-db/src/main.rs",
+      "tuff-db/src/lightweight/main.rs",
+      "tuff-db/src/lightweight/storage.rs"
+    ],
+    "validation": {
+      "command": "cargo check",
+      "result": "passed",
+      "notes": [
+        "ビルドエラーなし",
+        "unused 警告は残存（既存設計由来）"
+      ]
+    },
+    "review_notes": {
+      "improvements": [
+        "watch方式は『最新値優先』で欠損防止に有効だが、中間断片は意図的にスキップされる仕様であることを明文化すると安全",
+        "append_override の Result を現状握りつぶしているため、失敗時ログを追加すると運用観測性が向上"
+      ],
+      "open_questions": [
+        "watchの最新優先を正式仕様とし、履歴完全性が必要な経路を別途用意するか",
+        "TuffDb trait async化に合わせて将来の実装（別DB backend）で同一契約を維持するか"
+      ]
+    }
+  }
 }

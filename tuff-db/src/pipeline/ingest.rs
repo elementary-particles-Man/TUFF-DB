@@ -50,7 +50,7 @@ where
                 .generator
                 .generate(&fragment, &facts, status)
                 .await?;
-            let op = self.db.append_abstract(abstract_)?;
+            let op = self.db.append_abstract(abstract_).await?;
             ops.push(IngestOutcome {
                 op,
                 status,
@@ -62,7 +62,7 @@ where
         Ok(ops)
     }
 
-    pub fn select_all(&self) -> anyhow::Result<Vec<Abstract>> {
-        self.db.select(crate::db::SelectQuery::default())
+    pub async fn select_all(&self) -> anyhow::Result<Vec<Abstract>> {
+        self.db.select(crate::db::SelectQuery::default()).await
     }
 }
